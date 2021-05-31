@@ -19,7 +19,7 @@ type CLIConfig struct {
 }
 
 type Config struct {
-	host    string
+	host    *WordlistInput
 	port    int
 	debug   bool
 	domain  string
@@ -45,7 +45,8 @@ func createConfig(cliconf *CLIConfig) (Config, error) {
 	if cliconf.host == "" {
 		return conf, fmt.Errorf("Host (-h) not defined")
 	}
-	conf.host = cliconf.host
+	conf.host, err = NewWordlistInput(cliconf.host)
+
 	if cliconf.domain == "" {
 		return conf, fmt.Errorf("Domain (-d) not defined")
 	}

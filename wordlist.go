@@ -33,13 +33,25 @@ func (w *WordlistInput) Next() bool {
 }
 
 //Value returns the value from wordlist at current cursor position
-func (w *WordlistInput) Value() []byte {
-	return w.data[w.position]
+func (w *WordlistInput) Value() ([]byte, int) {
+	return w.data[w.position], w.position
 }
 
 //Total returns the size of wordlist
 func (w *WordlistInput) Total() int {
 	return len(w.data)
+}
+
+func (w *WordlistInput) Remove(idx int) {
+
+	temp := make([][]byte, 0)
+	if idx >= len(w.data) {
+		temp = append(w.data[:idx-1])
+	} else {
+		temp = append(w.data[:idx], w.data[idx+1:]...)
+	}
+
+	w.data = temp
 }
 
 //validFile checks that the wordlist file exists and can be read
