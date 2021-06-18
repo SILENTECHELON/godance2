@@ -46,17 +46,17 @@ func (r *Runner) Start() {
 
 	var wg sync.WaitGroup
 	var workingPass []byte
+	totals := r.conf.users.Total() * r.conf.passwds.Total() * r.conf.host.Total()
 	wg.Add(1)
-	go r.runProgress(&wg)
+
+	go r.runProgress(&wg, totals)
 
 	result, ferr := os.Create("results.csv")
-	rerror, eerr := os.Create("error.txt")
 
-	if (ferr != nil) || (eerr != nil) {
+	if ferr != nil {
 		return
 	}
 	defer result.Close()
-	defer rerror.Close()
 
 	limiter := make(chan bool, r.conf.threads)
 	for r.conf.passwds.Next() {
@@ -69,7 +69,7 @@ func (r *Runner) Start() {
 		for r.conf.users.Next() {
 			wg.Add(1)
 			nextUser, userPos := r.conf.users.Value()
-
+			r.counter += r.conf.host.Total()
 			if userPos < 0 {
 				return
 			}
@@ -83,7 +83,6 @@ func (r *Runner) Start() {
 					workingPass = nextPassword
 				}
 
-				r.counter++
 				go func() {
 					// release a slot in queue when exiting
 					defer func() { <-limiter }()
@@ -92,10 +91,10 @@ func (r *Runner) Start() {
 					r.currentUser = string(nextUser)
 					r.currentPass = string(workingPass)
 					w := bufio.NewWriterSize(result, 512)
-					ee := bufio.NewWriterSize(rerror, 512)
-					taskRes := r.RunTask(nextUser, workingPass, theHost, &wg, w, ee)
+
+					taskRes := r.RunTask(nextUser, workingPass, theHost, &wg, w)
 					w.Flush()
-					ee.Flush()
+
 					if taskRes != nil {
 						r.conf.host.Remove(thePos)
 						fmt.Printf("\n [%d] Success: %s // Username: %s // Password: %s\n", thePos, theHost, nextUser, workingPass)
@@ -106,24 +105,22 @@ func (r *Runner) Start() {
 			}
 
 			// Reset the pwd inputlist position
-
 			wg.Done()
 			r.conf.host.position = -1
 
 		}
 
-		r.conf.users.position = -1
 		wg.Done()
-
+		r.conf.users.position = -1
 	}
 
 	wg.Wait()
 }
 
-func (r *Runner) runProgress(wg *sync.WaitGroup) {
+func (r *Runner) runProgress(wg *sync.WaitGroup, total int) {
 	defer wg.Done()
 	r.startTime = time.Now()
-	totalProgress := r.conf.users.Total() * r.conf.passwds.Total() * r.conf.host.Total()
+	totalProgress := total
 	for r.counter <= totalProgress {
 		r.updateProgress()
 		if r.counter == totalProgress {
@@ -153,7 +150,7 @@ func (r *Runner) updateProgress() {
 	fmt.Fprintf(os.Stderr, "%s%s", TERMINAL_CLEAR_LINE, progString)
 }
 
-func (r *Runner) RunTask(username []byte, password []byte, host []byte, work *sync.WaitGroup, txt *bufio.Writer, wtf *bufio.Writer) []byte {
+func (r *Runner) RunTask(username []byte, password []byte, host []byte, work *sync.WaitGroup, txt *bufio.Writer) []byte {
 	options := smb.Options{
 		Host:     string(host),
 		Port:     445,
@@ -168,7 +165,7 @@ func (r *Runner) RunTask(username []byte, password []byte, host []byte, work *sy
 	//	os.WriteFile("dummyhash", []byte(result), fs.ModeAppend)
 	if err != nil {
 
-		fmt.Fprintln(wtf, host, err)
+		err = nil
 		return nil
 	}
 

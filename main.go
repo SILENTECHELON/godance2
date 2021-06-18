@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strconv"
 )
 
@@ -95,6 +96,8 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+	debug.SetMaxThreads(50000)
+
 	runner := NewRunner(&conf)
 	runner.Start()
 }
